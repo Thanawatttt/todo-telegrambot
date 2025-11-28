@@ -1409,8 +1409,13 @@ func (b *Bot) handleRemind(message *tgbotapi.Message) error {
 		return err
 	}
 
-	// Calculate next notification time
-	nextTime := b.nowInUserTimezone(message.From.ID).Add(duration)
+	// Calculate next notification time in user's timezone
+	userTime := b.nowInUserTimezone(message.From.ID)
+	nextTime := userTime.Add(duration)
+
+	// Store in database as UTC (database handles this automatically)
+	// But keep the original user time for display
+	displayTime := nextTime
 
 	// Create reminder
 	newReminder := NewReminder{
@@ -1428,7 +1433,7 @@ func (b *Bot) handleRemind(message *tgbotapi.Message) error {
 	}
 
 	msgText := fmt.Sprintf("⏰ Reminder set successfully!\n\nI'll remind you in %s\n\n📅 %s",
-		duration.String(), b.formatTimeForUser(nextTime, message.From.ID))
+		duration.String(), displayTime.Format("2006-01-02 15:04"))
 	msg := tgbotapi.NewMessage(message.Chat.ID, msgText)
 	msg.ParseMode = "HTML"
 
@@ -1480,6 +1485,7 @@ func (b *Bot) handleSnooze(message *tgbotapi.Message) error {
 	}
 
 	snoozeUntil := b.nowInUserTimezone(message.From.ID).Add(duration)
+	displaySnoozeTime := snoozeUntil
 
 	// Snooze reminder
 	_, err = b.db.SnoozeReminder(reminderID, snoozeUntil)
@@ -1490,7 +1496,7 @@ func (b *Bot) handleSnooze(message *tgbotapi.Message) error {
 	}
 
 	msgText := fmt.Sprintf("😴 Reminder snoozed successfully!\n\nI'll remind you again in %s\n\n📅 %s",
-		duration.String(), b.formatTimeForUser(snoozeUntil, message.From.ID))
+		duration.String(), displaySnoozeTime.Format("2006-01-02 15:04"))
 	msg := tgbotapi.NewMessage(message.Chat.ID, msgText)
 	msg.ParseMode = "HTML"
 
@@ -1572,6 +1578,7 @@ func (b *Bot) handleSnoozeCallback(callback *tgbotapi.CallbackQuery, reminderIDS
 
 	// Snooze for 30 minutes by default
 	snoozeUntil := b.nowInUserTimezone(callback.From.ID).Add(30 * time.Minute)
+	displaySnoozeTime := snoozeUntil
 
 	// Snooze reminder
 	_, err = b.db.SnoozeReminder(reminderID, snoozeUntil)
@@ -1584,7 +1591,7 @@ func (b *Bot) handleSnoozeCallback(callback *tgbotapi.CallbackQuery, reminderIDS
 	}
 
 	// Send callback response
-	callbackText := fmt.Sprintf("😴 Snoozed until %s", snoozeUntil.Format("15:04"))
+	callbackText := fmt.Sprintf("😴 Snoozed until %s", displaySnoozeTime.Format("15:04"))
 	_, err = b.api.Request(tgbotapi.CallbackConfig{
 		CallbackQueryID: callback.ID,
 		Text:            callbackText,
