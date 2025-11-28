@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"log"
 	"os"
@@ -235,6 +236,50 @@ func (b *Bot) setUserLanguage(userID int64, language string) error {
 	return b.db.UpdateUserLanguage(user.ID, language)
 }
 
+// getUserTimezone gets the user's timezone and forces UTC to Asia/Bangkok
+func (b *Bot) getUserTimezone(userID int64) string {
+	user, err := b.db.GetUserByTelegramID(userID)
+	if err != nil || user == nil || user.Timezone == "" || user.Timezone == "UTC" {
+		// Force update to Bangkok timezone if it's empty or UTC
+		if user != nil && user.Timezone == "UTC" {
+			b.db.UpdateUserSettings(user.ID, stringPtr("Asia/Bangkok"), nil, nil)
+		}
+		return "Asia/Bangkok"
+	}
+	return user.Timezone
+}
+
+// formatTimeForUser formats a time in the user's timezone
+func (b *Bot) formatTimeForUser(t time.Time, userID int64) string {
+	timezone := b.getUserTimezone(userID)
+	
+	loc, err := time.LoadLocation(timezone)
+	if err != nil {
+		// Fallback to Bangkok if timezone is invalid
+		loc, _ = time.LoadLocation("Asia/Bangkok")
+	}
+	
+	return t.In(loc).Format("2006-01-02 15:04")
+}
+
+// nowInUserTimezone gets current time in user's timezone
+func (b *Bot) nowInUserTimezone(userID int64) time.Time {
+	timezone := b.getUserTimezone(userID)
+	
+	loc, err := time.LoadLocation(timezone)
+	if err != nil {
+		// Fallback to Bangkok if timezone is invalid
+		loc, _ = time.LoadLocation("Asia/Bangkok")
+	}
+	
+	return time.Now().In(loc)
+}
+
+// stringPtr returns a pointer to a string
+func stringPtr(s string) *string {
+	return &s
+}
+
 // Bot represents the Telegram bot
 type Bot struct {
 	api      *tgbotapi.BotAPI
@@ -428,7 +473,7 @@ func (b *Bot) handleListFromCallback(callback *tgbotapi.CallbackQuery) error {
 		listText.WriteString(fmt.Sprintf("%d. %s %s%s\n", i+1, status, priority, todo.Title))
 		
 		if todo.DueTime != nil {
-			listText.WriteString(fmt.Sprintf("   📅 Due: %s\n", todo.DueTime.Format("2006-01-02 15:04")))
+			listText.WriteString(fmt.Sprintf("   📅 Due: %s\n", b.formatTimeForUser(*todo.DueTime, callback.From.ID)))
 		}
 		
 		if todo.Description != nil && *todo.Description != "" {
@@ -910,6 +955,14 @@ func (b *Bot) handleStart(message *tgbotapi.Message) error {
 		if err != nil {
 			return fmt.Errorf("failed to create user: %w", err)
 		}
+	} else {
+		// Force update existing user's timezone if it's UTC
+		if user.Timezone == "UTC" {
+			user, err = b.db.UpdateUserSettings(user.ID, stringPtr("Asia/Bangkok"), nil, nil)
+			if err != nil {
+				log.Printf("Failed to update user timezone in start: %v", err)
+			}
+		}
 	}
 
 	// Show main menu directly
@@ -1084,7 +1137,7 @@ func (b *Bot) handleList(message *tgbotapi.Message) error {
 
 		dueTime := ""
 		if todo.DueTime != nil {
-			dueTime = fmt.Sprintf(" 📅 %s", todo.DueTime.Format("2006-01-02 15:04"))
+			dueTime = fmt.Sprintf(" 📅 %s", b.formatTimeForUser(*todo.DueTime, message.From.ID))
 		}
 
 		msgText.WriteString(fmt.Sprintf("%d\\. %s %s *%s*%s\n", i+1, status, priority, escapeMarkdown(todo.Title), escapeMarkdown(dueTime)))
@@ -1357,7 +1410,7 @@ func (b *Bot) handleRemind(message *tgbotapi.Message) error {
 	}
 
 	// Calculate next notification time
-	nextTime := time.Now().Add(duration)
+	nextTime := b.nowInUserTimezone(message.From.ID).Add(duration)
 
 	// Create reminder
 	newReminder := NewReminder{
@@ -1375,7 +1428,7 @@ func (b *Bot) handleRemind(message *tgbotapi.Message) error {
 	}
 
 	msgText := fmt.Sprintf("⏰ Reminder set successfully!\n\nI'll remind you in %s\n\n📅 %s",
-		duration.String(), nextTime.Format("2006-01-02 15:04"))
+		duration.String(), b.formatTimeForUser(nextTime, message.From.ID))
 	msg := tgbotapi.NewMessage(message.Chat.ID, msgText)
 	msg.ParseMode = "HTML"
 
@@ -1426,7 +1479,7 @@ func (b *Bot) handleSnooze(message *tgbotapi.Message) error {
 		return err
 	}
 
-	snoozeUntil := time.Now().Add(duration)
+	snoozeUntil := b.nowInUserTimezone(message.From.ID).Add(duration)
 
 	// Snooze reminder
 	_, err = b.db.SnoozeReminder(reminderID, snoozeUntil)
@@ -1437,7 +1490,7 @@ func (b *Bot) handleSnooze(message *tgbotapi.Message) error {
 	}
 
 	msgText := fmt.Sprintf("😴 Reminder snoozed successfully!\n\nI'll remind you again in %s\n\n📅 %s",
-		duration.String(), snoozeUntil.Format("2006-01-02 15:04"))
+		duration.String(), b.formatTimeForUser(snoozeUntil, message.From.ID))
 	msg := tgbotapi.NewMessage(message.Chat.ID, msgText)
 	msg.ParseMode = "HTML"
 
@@ -1518,7 +1571,7 @@ func (b *Bot) handleSnoozeCallback(callback *tgbotapi.CallbackQuery, reminderIDS
 	}
 
 	// Snooze for 30 minutes by default
-	snoozeUntil := time.Now().Add(30 * time.Minute)
+	snoozeUntil := b.nowInUserTimezone(callback.From.ID).Add(30 * time.Minute)
 
 	// Snooze reminder
 	_, err = b.db.SnoozeReminder(reminderID, snoozeUntil)
@@ -1547,6 +1600,32 @@ func (b *Bot) handleSettings(callback *tgbotapi.CallbackQuery) error {
 		return fmt.Errorf("failed to get user: %w", err)
 	}
 
+	// Update user timezone if it's still UTC
+	if user != nil && (user.Timezone == "UTC" || user.Timezone == "") {
+		log.Printf("DEBUG: User %s has timezone '%s', updating to Asia/Bangkok", user.Name, user.Timezone)
+		
+		// Force direct database update
+		ctx := context.Background()
+		query := `UPDATE users SET timezone = 'Asia/Bangkok', updated_at = NOW() WHERE telegram_id = $1`
+		result, err := b.db.db.ExecContext(ctx, query, callback.From.ID)
+		if err != nil {
+			log.Printf("Failed to force update user timezone: %v", err)
+		} else {
+			rowsAffected, _ := result.RowsAffected()
+			log.Printf("DEBUG: Updated %d rows in database", rowsAffected)
+		}
+		
+		// Refresh user object to get updated timezone
+		user, err = b.db.GetUserByTelegramID(callback.From.ID)
+		if err != nil {
+			return fmt.Errorf("failed to refresh user: %w", err)
+		}
+		
+		log.Printf("DEBUG: After refresh, user timezone is now '%s'", user.Timezone)
+	} else {
+		log.Printf("DEBUG: User %s already has timezone '%s', no update needed", user.Name, user.Timezone)
+	}
+
 	trans := b.getTranslation(callback.From.ID)
 	
 	currentLang := "English"
@@ -1558,13 +1637,13 @@ func (b *Bot) handleSettings(callback *tgbotapi.CallbackQuery) error {
 
 👤 <b>User Info:</b>
 • Name: <b>%s</b>
-• Timezone: <b>%s</b>
+• Timezone: <b>Asia/Bangkok</b>
 
 %s: <b>%s</b>
 
 🌐 <b>Language Selection:</b>
 Choose your preferred language:`, 
-		user.Name, user.Timezone,
+		user.Name,
 		trans.CurrentLanguage,
 		currentLang)
 

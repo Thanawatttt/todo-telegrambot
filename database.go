@@ -94,6 +94,44 @@ func createTables(db *sql.DB) error {
 	}
 
 	log.Println("Database tables created/verified successfully")
+	
+	// Run one-time migration to update all UTC users to Asia/Bangkok
+	if err := migrateTimezones(db); err != nil {
+		log.Printf("Warning: Failed to migrate timezones: %v", err)
+	}
+	
+	return nil
+}
+
+// migrateTimezones updates all users with UTC timezone to Asia/Bangkok
+func migrateTimezones(db *sql.DB) error {
+	ctx := context.Background()
+	
+	// First check how many UTC users exist
+	var count int
+	checkQuery := `SELECT COUNT(*) FROM users WHERE timezone = 'UTC'`
+	err := db.QueryRowContext(ctx, checkQuery).Scan(&count)
+	if err != nil {
+		return fmt.Errorf("failed to count UTC users: %w", err)
+	}
+	
+	log.Printf("DEBUG: Found %d users with UTC timezone", count)
+	
+	if count == 0 {
+		log.Println("DEBUG: No UTC users found, skipping migration")
+		return nil
+	}
+	
+	query := `UPDATE users SET timezone = 'Asia/Bangkok', updated_at = NOW() WHERE timezone = 'UTC'`
+	
+	result, err := db.ExecContext(ctx, query)
+	if err != nil {
+		return fmt.Errorf("failed to migrate timezones: %w", err)
+	}
+	
+	rowsAffected, _ := result.RowsAffected()
+	log.Printf("DEBUG: Successfully migrated %d users from UTC to Asia/Bangkok timezone", rowsAffected)
+	
 	return nil
 }
 
