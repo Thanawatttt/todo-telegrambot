@@ -50,7 +50,7 @@ func createTables(db *sql.DB) error {
 			id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
 			telegram_id BIGINT UNIQUE NOT NULL,
 			name VARCHAR(255) NOT NULL,
-			timezone VARCHAR(50) DEFAULT 'UTC',
+			timezone VARCHAR(50) DEFAULT 'Asia/Bangkok',
 			language VARCHAR(10) DEFAULT 'en',
 			default_reminder_interval INTEGER DEFAULT 24,
 			notification_style VARCHAR(20) DEFAULT 'detailed',

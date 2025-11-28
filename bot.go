@@ -903,7 +903,7 @@ func (b *Bot) handleStart(message *tgbotapi.Message) error {
 		newUser := NewUser{
 			TelegramID: userID,
 			Name:       userName,
-			Timezone:   "UTC",
+			Timezone:   "Asia/Bangkok",
 			Language:   "en",
 		}
 		user, err = b.db.CreateUser(newUser)
